@@ -33,6 +33,7 @@ contract Airdrop is Ownable {
     constructor() public {
         shuffleToken = new ShuffleToken(address(this), MINT_AMOUNT);
         emit SetMaxClaimedBy(maxClaimedBy);
+        shuffleToken.setOwner(msg.sender);
     }
 
     // ///
