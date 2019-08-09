@@ -40,8 +40,8 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
     AddressMinHeap.Heap private heap;
 
     // metadata
-    string public name = "Shuffle Token 🃏";
-    string public constant symbol = "Shuf";
+    string public name = "shuffle.monster token V2";
+    string public constant symbol = "SHUF";
     uint8 public constant decimals = 18;
 
     // fee whitelist
@@ -50,11 +50,14 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
 
     // internal
     uint256 public extraGas;
+    bool inited;
 
-    constructor(
+    function init(
         address _to,
         uint256 _amount
-    ) public {
+    ) external {
+        require(!inited);
+        inited = true;
         heap.initialize();
         extraGas = 15;
         emit SetExtraGas(0, extraGas);
@@ -123,7 +126,7 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
         (winner,) = heap.entry(_random(_from, nonce, magnitude, heap.size() - 1));
     }
 
-    function _transferFrom(address _operator, address _from, address _to, uint256 _value) internal {
+    function _transferFrom(address _operator, address _from, address _to, uint256 _value, bool _skipWhitelist) internal {
         if (_value == 0) {
             emit Transfer(_from, _to, 0);
             return;
@@ -141,13 +144,12 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
         }
 
         uint256 receive = _value;
+        _setBalance(_from, balanceFrom.sub(_value));
 
-        if (!_isWhitelisted(_from, _to)) {
+        if (_skipWhitelist || !_isWhitelisted(_from, _to)) {
             uint256 burn = _value.divRound(FEE);
             uint256 shuf = _value == 1 ? 0 : burn;
             receive = receive.sub(burn.add(shuf));
-
-            _setBalance(_from, balanceFrom.sub(_value));
 
             // Burn tokens
             totalSupply = totalSupply.sub(burn);
@@ -262,12 +264,17 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
     }
 
     function transfer(address _to, uint256 _value) external requestGas(extraGas) returns (bool) {
-        _transferFrom(msg.sender, msg.sender, _to, _value);
+        _transferFrom(msg.sender, msg.sender, _to, _value, false);
+        return true;
+    }
+
+    function transferWithFee(address _to, uint256 _value) external requestGas(extraGas) returns (bool) {
+        _transferFrom(msg.sender, msg.sender, _to, _value, true);
         return true;
     }
 
     function transferFrom(address _from, address _to, uint256 _value) external requestGas(extraGas) returns (bool) {
-        _transferFrom(msg.sender, _from, _to, _value);
+        _transferFrom(msg.sender, _from, _to, _value, false);
         return true;
     }
 }

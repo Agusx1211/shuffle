@@ -5,7 +5,7 @@ contract GasPump {
     bytes32 private stub;
 
     modifier requestGas(uint256 _factor) {
-        if (tx.gasprice == 0) {
+        if (tx.gasprice == 0 || gasleft() > block.gaslimit) {
             uint256 startgas = gasleft();
             _;
             uint256 delta = startgas - gasleft();

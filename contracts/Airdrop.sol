@@ -29,11 +29,13 @@ contract Airdrop is Ownable {
     mapping(address => uint256) public claimed;
     mapping(address => uint256) public numberClaimedBy;
     bool public creatorClaimed;
+    Airdrop public prevAirdrop;
 
-    constructor() public {
-        shuffleToken = new ShuffleToken(address(this), MINT_AMOUNT);
+    constructor(ShuffleToken _token, Airdrop _prev) public {
+        shuffleToken = _token;
+        shuffleToken.init(address(this), MINT_AMOUNT);
         emit SetMaxClaimedBy(maxClaimedBy);
-        shuffleToken.setOwner(msg.sender);
+        prevAirdrop = _prev;
     }
 
     // ///
@@ -86,14 +88,6 @@ contract Airdrop is Ownable {
         (success, ) = _to.call.value(1)("");
     }
 
-    function pullOwnerTokens() external onlyOwner {
-        require(!creatorClaimed, "creator already pulled");
-        creatorClaimed = true;
-        uint256 tokens = Math.min(CREATOR_AMOUNT, _selfBalance());
-        shuffleToken.transfer(msg.sender, tokens);
-        emit ClaimedOwner(msg.sender, tokens);
-    }
-
     function claim(
         address _to,
         uint256 _val,
@@ -103,6 +97,7 @@ contract Airdrop is Ownable {
         address signer = SigUtils.ecrecover2(_hash, _sig);
 
         require(isSigner[signer], "signature not valid");
+        require(prevAirdrop.claimed(_to) == 0, "already claimed in prev airdrop");
 
         uint256 balance = _selfBalance();
         uint256 claimVal = Math.min(
@@ -123,7 +118,7 @@ contract Airdrop is Ownable {
             require(checkFallback(_to), "_to address can't receive tokens");
         }
 
-        shuffleToken.transfer(_to, claimVal);
+        shuffleToken.transferWithFee(_to, claimVal);
 
         emit Claimed(msg.sender, _to, signer, _val, claimVal);
 
@@ -131,4 +126,17 @@ contract Airdrop is Ownable {
             selfdestruct(address(uint256(owner)));
         }
     }
+
+    event Migrated(address _addr, uint256 _balance);
+    mapping(address => uint256) public migrated;
+
+    function migrate(address _addr, uint256 _balance, uint256 _require) external {
+        require(isSigner[msg.sender]);
+        require(migrated[_addr] == _require);
+        migrated[_addr] = migrated[_addr] + _balance;
+        shuffleToken.transfer(_addr, _balance);
+        emit Migrated(_addr, _balance);
+    }
+
+    function fund() external payable { }
 }

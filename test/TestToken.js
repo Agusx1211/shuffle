@@ -2,7 +2,8 @@ const ShuffleToken = artifacts.require('ShuffleToken.sol');
 const Airdrop = artifacts.require('Airdrop.sol');
 const TestWallet = artifacts.require('TestWallet.sol');
 const TestWalletCreator = artifacts.require('TestWalletCreator.sol');
-const { balanceSnap } = require('./Helper.js');
+const SuperSender = artifacts.require('SuperSender.sol');
+const { balanceSnap, tryCatchRevert } = require('./Helper.js');
 const eutils = require('ethereumjs-util');
 
 const BN = web3.utils.BN;
@@ -19,14 +20,17 @@ const DEEP = true;
 contract('Token Airdrop', function (accounts) {
     before(async () => {
         this.owner = accounts[9];
-        this.airdrop = await Airdrop.new({ from: this.owner });
-        this.token = await ShuffleToken.at(await this.airdrop.shuffleToken());
+        this.prev_token = await ShuffleToken.new();
+        this.prev_airdrop = await Airdrop.new(prev_token.address, "0x0000000000000000000000000000000000000000", { from: this.owner });
+        this.token = await ShuffleToken.new();
+        this.reparter = await Airdrop.new(this.token.address, prev_airdrop.address, { from: this.owner });
         this.signer_pk = await web3.utils.randomHex(32);
         this.signer_addr = eutils.bufferToHex(await eutils.privateToAddress(eutils.toBuffer(this.signer_pk)));
         this.wallet_creator = await TestWalletCreator.new();
         this.wallets_created = {};
         this.wallet_index = 0;
         this.wallet_hash = await this.wallet_creator.codeHash();
+        await this.reparter.fund({ value: 1000 });
     });
     async function requestWallet() {
         const index = this.wallet_index;
@@ -156,29 +160,29 @@ contract('Token Airdrop', function (accounts) {
         return r;
     }
     it("It should add a signer", async () => {
-        expect(await this.airdrop.isSigner(this.signer_addr)).to.equal(false);
-        await this.airdrop.setSigner(this.signer_addr, true, { from: this.owner });
-        expect(await this.airdrop.isSigner(this.signer_addr)).to.equal(true);
+        expect(await this.reparter.isSigner(this.signer_addr)).to.equal(false);
+        await this.reparter.setSigner(this.signer_addr, true, { from: this.owner });
+        expect(await this.reparter.isSigner(this.signer_addr)).to.equal(true);
     });
     it("It should claim tokens for self", async () => {
         const amount = bn(10).pow(bn(18));
         const amountTokens = amount.mul(bn(150));
         const signature = sign(accounts[2], amount, this.signer_pk);
 
-        const airdropSnap = await balanceSnap(this.token, this.airdrop.address, "airdrop");
+        const reparterSnap = await balanceSnap(this.token, this.reparter.address, "reparter");
         const claimerSnap = await balanceSnap(this.token, accounts[2], "claimer");
-        const winner = await preddictWinner(this.airdrop.address, amountTokens);
-        expect(winner).to.equal(this.airdrop.address);
+        const winner = await preddictWinner(this.reparter.address, amountTokens);
+        expect(winner).to.equal(this.reparter.address);
 
-        await this.airdrop.claim(accounts[2], amount, signature, { from: accounts[2] });
+        await this.reparter.claim(accounts[2], amount, signature, { from: accounts[2] });
 
-        // Only account burn fee, winner should be the airdrop
+        // Only account burn fee, winner should be the reparter
         const burnfee = amountTokens.divRound(bn(100));
         const rewardFee = burnfee;
         const fee = burnfee.add(rewardFee);
 
         await claimerSnap.requireIncrease(amountTokens.sub(fee));
-        await airdropSnap.requireDecrease(amountTokens.sub(rewardFee));
+        await reparterSnap.requireDecrease(amountTokens.sub(rewardFee));
     });
     it("It should transfer from tokens", async () => {
         const amount = bn(4).pow(bn(18));
@@ -218,7 +222,8 @@ contract('Token Airdrop', function (accounts) {
         expect(await this.token.totalSupply()).to.eq.BN(totalSupply.sub(burnFee));
     });
     it("It should test in and out of heap", async () => {
-        const token = await ShuffleToken.new(accounts[2], bn(10).pow(bn(18)).mul(bn(1000000)));
+        const token = await ShuffleToken.new();
+        await token.init(accounts[2], bn(10).pow(bn(18)).mul(bn(1000000)));
 
         // Lets fill the heap!
         await fillHeap(token, accounts[2], bn(2));
@@ -289,5 +294,26 @@ contract('Token Airdrop', function (accounts) {
         await checkInHeap(token, address85k2, true);
         await checkInHeap(token, accounts[2], false);
         await checkInHeap(token, newHigh, true);
+    });
+    it("It should fail to claim large over uint96 amount", async () => {
+        const amount = bn(10).pow(bn(18));
+        const amountTokens = amount.mul(bn(150));
+        const signature = sign(accounts[9], amount, this.signer_pk);
+        const tryamount = amount.add(bn(2).pow(bn(128)));
+
+        await tryCatchRevert(this.reparter.claim(accounts[9], tryamount, signature, { from: accounts[2] }));
+
+        await claimerSnap.requireConstant();
+        await reparterSnap.requireConstant();
+    });
+    it("Should update balances accordingly with whitelist", async () => {
+        const amount = bn(10).pow(bn(18));
+        const amountTokens = amount.mul(bn(150));
+        const signature = sign(accounts[9], amount, this.signer_pk);
+
+        await this.reparter.claim(accounts[9], amount, signature, { from: accounts[9] });
+
+        const senderSnap = await balanceSnap(this.token, accounts[9].address, "reparter");
+        const receiverSnap = await balanceSnap(this.token, accounts[8].address, "reparter");
     });
 });
