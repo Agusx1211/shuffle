@@ -1,29 +1,24 @@
 pragma solidity ^0.5.10;
 
-import "./commons/AddressMinHeap.sol";
 import "./commons/Ownable.sol";
 import "./utils/DistributedStorage.sol";
 import "./utils/SafeMath.sol";
 import "./utils/Math.sol";
 import "./utils/GasPump.sol";
 import "./interfaces/IERC20.sol";
-
+import "./Heap.sol";
 
 contract ShuffleToken is Ownable, GasPump, IERC20 {
-    using AddressMinHeap for AddressMinHeap.Heap;
     using DistributedStorage for bytes32;
     using SafeMath for uint256;
 
     // Shuffle events
     event Winner(address indexed _addr, uint256 _value);
 
-    // Heap events
-    event JoinHeap(address indexed _address, uint256 _balance, uint256 _prevSize);
-    event LeaveHeap(address indexed _address, uint256 _balance, uint256 _prevSize);
-
     // Managment events
     event SetName(string _prev, string _new);
     event SetExtraGas(uint256 _prev, uint256 _new);
+    event SetHeap(address _prev, address _new);
     event WhitelistFrom(address _addr, bool _whitelisted);
     event WhitelistTo(address _addr, bool _whitelisted);
 
@@ -33,10 +28,6 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
 
     // game
     uint256 public constant FEE = 100;
-    uint256 public constant TOP_SIZE = 512;
-
-    // heap
-    AddressMinHeap.Heap private heap;
 
     // metadata
     string public name = "Shuffle.Monster V3";
@@ -46,6 +37,9 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
     // fee whitelist
     mapping(address => bool) public whitelistFrom;
     mapping(address => bool) public whitelistTo;
+
+    // heap
+    Heap public heap;
 
     // internal
     uint256 public extraGas;
@@ -59,9 +53,12 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
         assert(!inited);
         inited = true;
 
+        // Create Heap
+        heap = new Heap();
+        emit SetHeap(address(0), address(heap));
+
         // Init contract variables and mint
         // entire token balance
-        heap.initialize();
         extraGas = 15;
         emit SetExtraGas(0, extraGas);
         emit Transfer(address(0), _to, _amount);
@@ -72,6 +69,8 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
     ///
     // Storage access functions
     ///
+
+    // Getters
 
     function _toKey(address a) internal pure returns (bytes32) {
         return bytes32(uint256(a));
@@ -89,6 +88,8 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
         return uint256(_toKey(_addr).read(keccak256(abi.encodePacked("nonce", _cat))));
     }
 
+    // Setters
+
     function _setAllowance(address _addr, address _spender, uint256 _value) internal {
         _toKey(_addr).write(keccak256(abi.encodePacked("allowance", _spender)), bytes32(_value));
     }
@@ -99,11 +100,7 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
 
     function _setBalance(address _addr, uint256 _balance) internal {
         _toKey(_addr).write(BALANCE_KEY, bytes32(_balance));
-        _computeHeap(_addr, _balance);
-    }
-
-    function getNonce(address _addr, uint256 _cat) external view returns (uint256) {
-        return _nonce(_addr, _cat);
+        heap.update(_addr, _balance);
     }
 
     ///
@@ -126,10 +123,10 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
         uint256 nonce = _nonce(_from, magnitude);
         _setNonce(_from, magnitude, nonce + 1);
         // pick entry from heap
-        (winner,) = heap.entry(_random(_from, nonce, magnitude, heap.size() - 1));
+        winner = heap.addressAt(_random(_from, nonce, magnitude, heap.size() - 1));
     }
 
-    function _transferFrom(address _operator, address _from, address _to, uint256 _value, bool _skipWhitelist) internal {
+    function _transferFrom(address _operator, address _from, address _to, uint256 _value, bool _payFee) internal {
         // If transfer amount is zero
         // emit event and stop execution
         if (_value == 0) {
@@ -165,7 +162,7 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
         // If the transaction is not whitelisted
         // or if sender requested to pay the fee
         // calculate fees
-        if (_skipWhitelist || !_isWhitelisted(_from, _to)) {
+        if (_payFee || !_isWhitelisted(_from, _to)) {
             // Fee is the same for BURN and SHUF
             // If we are sending value one
             // give priority to BURN
@@ -197,47 +194,6 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
         emit Transfer(_from, _to, receive);
     }
 
-    function _computeHeap(address _addr, uint256 _new) internal {
-        uint256 size = heap.size();
-
-        // If the heap is empty
-        // join the _addr
-        if (size == 0) {
-            emit JoinHeap(_addr, _new, 0);
-            heap.insert(_addr, _new);
-            return;
-        }
-
-        // Load top value of the heap
-        (, uint256 lastBal) = heap.top();
-
-        // If our target address already is in the heap
-        if (heap.has(_addr)) {
-            // Update the target address value
-            heap.update(_addr, _new);
-            // If the new value is 0
-            // always pop the heap
-            // we updated the heap, so our address should be on top
-            if (_new == 0) {
-                heap.popTop();
-                emit LeaveHeap(_addr, 0, size);
-            }
-        } else {
-            // IF heap is full or new balance is higher than pop heap
-            if (_new != 0 && (size < TOP_SIZE || lastBal < _new)) {
-                // If heap is full pop heap
-                if (size >= TOP_SIZE) {
-                    (address _poped, uint256 _balance) = heap.popTop();
-                    emit LeaveHeap(_poped, _balance, size);
-                }
-
-                // Insert new value
-                heap.insert(_addr, _new);
-                emit JoinHeap(_addr, _new, size);
-            }
-        }
-    }
-
     ///
     // Managment
     ///
@@ -262,9 +218,18 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
         extraGas = _gas;
     }
 
+    function setHeap(Heap _heap) external onlyOwner {
+        emit SetHeap(address(heap), address(_heap));
+        heap = _heap;
+    }
+
     /////
     // Heap methods
     /////
+
+    function topSize() external view returns (uint256) {
+        return heap.topSize();
+    }
 
     function heapSize() external view returns (uint256) {
         return heap.size();
@@ -279,7 +244,11 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
     }
 
     function heapIndex(address _addr) external view returns (uint256) {
-        return heap.index[_addr];
+        return heap.indexOf(_addr);
+    }
+
+    function getNonce(address _addr, uint256 _cat) external view returns (uint256) {
+        return _nonce(_addr, _cat);
     }
 
     /////
