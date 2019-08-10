@@ -5,14 +5,14 @@ import "./IsContract.sol";
 
 
 library DistributedStorage {
-    function contractSlot(bytes32 _key) private view returns (address) {
+    function contractSlot(bytes32 _struct) private view returns (address) {
         return address(
             uint256(
                 keccak256(
                     abi.encodePacked(
                         byte(0xff),
                         address(this),
-                        _key,
+                        _struct,
                         keccak256(type(StorageUnit).creationCode)
                     )
                 )
@@ -20,10 +20,10 @@ library DistributedStorage {
         );
     }
 
-    function deploy(bytes32 _key) private {
+    function deploy(bytes32 _struct) private {
         bytes memory slotcode = type(StorageUnit).creationCode;
         /* solium-disable-next-line */
-        assembly{ pop(create2(0, add(slotcode, 0x20), mload(slotcode), _key)) }
+        assembly{ pop(create2(0, add(slotcode, 0x20), mload(slotcode), _struct)) }
     }
 
     function write(
