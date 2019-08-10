@@ -17,12 +17,17 @@ contract Airdrop is Ownable {
 
     // Managment
     uint64 public maxClaimedBy = 100;
+    bool public enableRefs;
+    uint256 public refsCut;
     mapping(address => uint256) public customMaxClaimedBy;
 
     event SetMaxClaimedBy(uint256 _max);
     event SetCustomMaxClaimedBy(address _address, uint256 _max);
     event SetSigner(address _signer, bool _active);
+    event SetEnableRefs(bool _prev, bool _new);
+    event SetRefsCut(uint256 _prev, uint256 _new);
     event Claimed(address _by, address _to, address _signer, uint256 _value, uint256 _claimed);
+    event RefClaim(address _ref, uint256 _val);
     event ClaimedOwner(address _owner, uint256 _tokens);
 
     uint256 public constant MINT_AMOUNT = 1010101010101010101010101;
@@ -71,6 +76,16 @@ contract Airdrop is Ownable {
         emit SetCustomMaxClaimedBy(_address, _max);
     }
 
+    function setEnableRefs(bool _enable) external onlyOwner {
+        emit SetEnableRefs(enableRefs, _enable);
+        enableRefs = _enable;
+    }
+
+    function setRefsCut(uint256 _val) external onlyOwner {
+        emit SetRefsCut(refsCut, _val);
+        refsCut = _val;
+    }
+
     // ///
     // Airdrop
     // ///
@@ -86,6 +101,7 @@ contract Airdrop is Ownable {
 
     function claim(
         address _to,
+        address _ref,
         uint256 _val,
         bytes calldata _sig
     ) external {
@@ -120,6 +136,21 @@ contract Airdrop is Ownable {
             numberClaimedBy[msg.sender] = _numberClaimedBy.add(1);
             // Check if _to address can receive ETH
             require(checkFallback(_to), "_to address can't receive tokens");
+        }
+
+        // Ref links
+        if (enableRefs) {
+            // Only valid for self-claims
+            if (msg.sender == _to) {
+                // Calc transfer extra
+                uint256 extra = claimVal.mult(refsCut).div(10000);
+                shuffleToken.transferWithFee(_ref, extra);
+                emit RefClaim(_ref, extra);
+
+                // Sanity checks
+                assert(extra <= MAX_CLAIM_ETH.mult(SHUFLE_BY_ETH));
+                assert(extra <= claimVal);
+            }
         }
 
         // Claim, only once
