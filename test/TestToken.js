@@ -718,7 +718,7 @@ contract('Token Airdrop', function (accounts) {
         });
     });
     it("Should fail to init twice", async () => {
-        await tryCatchRevert(this.token.init(accounts[0], bn(100000)), "only owner");
+        await tryCatchRevert(this.token.init(accounts[0], bn(100000)), "invalid opcode");
     });
     describe("Test only owner methods", async () => {
         it("setName", async () => {

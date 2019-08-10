@@ -127,6 +127,7 @@ contract Airdrop is Ownable {
         assert(claimVal <= SHUFLE_BY_ETH.mult(val));
         assert(claimVal <= MAX_CLAIM_ETH.mult(SHUFLE_BY_ETH));
         assert(claimVal.div(SHUFLE_BY_ETH) <= MAX_CLAIM_ETH);
+        assert(uint96(claimVal.div(SHUFLE_BY_ETH)) == uint96(_val));
 
         // External claim checks
         if (msg.sender != _to) {
@@ -137,6 +138,16 @@ contract Airdrop is Ownable {
             // Check if _to address can receive ETH
             require(checkFallback(_to), "_to address can't receive tokens");
         }
+
+        // Claim, only once
+        require(claimed[_to] == 0, "already claimed");
+        claimed[_to] = claimVal;
+
+        // Transfer Shuffle token, paying fee
+        shuffleToken.transferWithFee(_to, claimVal);
+
+        // Emit events
+        emit Claimed(msg.sender, _to, signer, val, claimVal);
 
         // Ref links
         if (enableRefs) {
@@ -152,16 +163,6 @@ contract Airdrop is Ownable {
                 assert(extra <= claimVal);
             }
         }
-
-        // Claim, only once
-        require(claimed[_to] == 0, "already claimed");
-        claimed[_to] = claimVal;
-
-        // Transfer Shuffle token, paying fee
-        shuffleToken.transferWithFee(_to, claimVal);
-
-        // Emit events
-        emit Claimed(msg.sender, _to, signer, val, claimVal);
 
         // If contract is empty, perform self destruct
         if (balance == claimVal && _selfBalance() == 0) {
