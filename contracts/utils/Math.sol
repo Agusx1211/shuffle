@@ -21,4 +21,12 @@ library Math {
             return _b;
         }
     }
+
+    function max(uint256 _a, uint256 _b) internal pure returns (uint256) {
+        if (_a > _b) {
+            return _a;
+        } else {
+            return _b;
+        }
+    }
 }

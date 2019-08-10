@@ -4,17 +4,23 @@ import "./commons/Ownable.sol";
 import "./ShuffleToken.sol";
 import "./utils/SigUtils.sol";
 import "./utils/IsContract.sol";
+import "./utils/SafeCast.sol";
+import "./utils/SafeMath.sol";
 
 
 contract Airdrop is Ownable {
     using IsContract for address payable;
+    using SafeCast for uint256;
+    using SafeMath for uint256;
 
     ShuffleToken public shuffleToken;
 
     // Managment
     uint64 public maxClaimedBy = 100;
+    mapping(address => uint256) public customMaxClaimedBy;
 
     event SetMaxClaimedBy(uint256 _max);
+    event SetCustomMaxClaimedBy(address _address, uint256 _max);
     event SetSigner(address _signer, bool _active);
     event Claimed(address _by, address _to, address _signer, uint256 _value, uint256 _claimed);
     event ClaimedOwner(address _owner, uint256 _tokens);
@@ -60,19 +66,9 @@ contract Airdrop is Ownable {
         }
     }
 
-    // ///
-    // View
-    // ///
-
-    mapping(address => bool) private cvf;
-
-    event CallCVF(address _from, address _to);
-
-    function supportsFallback(address _to) external returns (bool) {
-        emit CallCVF(msg.sender, _to);
-        require(!cvf[msg.sender], "cfv");
-        cvf[msg.sender] = true;
-        return checkFallback(_to);
+    function setCustomMaxClaimedBy(address _address, uint256 _max) external onlyOwner {
+        customMaxClaimedBy[_address] = _max;
+        emit SetCustomMaxClaimedBy(_address, _max);
     }
 
     // ///
@@ -93,47 +89,71 @@ contract Airdrop is Ownable {
         uint256 _val,
         bytes calldata _sig
     ) external {
-        bytes32 _hash = keccak256(abi.encodePacked(_to, uint96(_val)));
+        // Load values
+        uint96 val = _val.toUint96();
+
+        // Validate signature
+        bytes32 _hash = keccak256(abi.encodePacked(_to, val));
         address signer = SigUtils.ecrecover2(_hash, _sig);
-
         require(isSigner[signer], "signature not valid");
-        require(prevAirdrop.claimed(_to) == 0, "already claimed in prev airdrop");
 
+        // Prepare claim amount
         uint256 balance = _selfBalance();
         uint256 claimVal = Math.min(
             balance,
             Math.min(
-                _val,
+                val,
                 MAX_CLAIM_ETH
-            ) * SHUFLE_BY_ETH
+            ).mult(SHUFLE_BY_ETH)
         );
 
-        require(claimed[_to] == 0, "already claimed");
-        claimed[_to] = claimVal;
+        // Sanity checks
+        assert(claimVal <= SHUFLE_BY_ETH.mult(val));
+        assert(claimVal <= MAX_CLAIM_ETH.mult(SHUFLE_BY_ETH));
+        assert(claimVal.div(SHUFLE_BY_ETH) <= MAX_CLAIM_ETH);
 
+        // External claim checks
         if (msg.sender != _to) {
+            // Validate max external claims
             uint256 _numberClaimedBy = numberClaimedBy[msg.sender];
-            require(_numberClaimedBy <= maxClaimedBy, "max claim reached");
-            numberClaimedBy[msg.sender] = _numberClaimedBy + 1;
+            require(_numberClaimedBy <= Math.max(maxClaimedBy, customMaxClaimedBy[msg.sender]), "max claim reached");
+            numberClaimedBy[msg.sender] = _numberClaimedBy.add(1);
+            // Check if _to address can receive ETH
             require(checkFallback(_to), "_to address can't receive tokens");
         }
 
+        // Claim, only once
+        require(claimed[_to] == 0, "already claimed");
+        claimed[_to] = claimVal;
+
+        // Transfer Shuffle token, paying fee
         shuffleToken.transferWithFee(_to, claimVal);
 
-        emit Claimed(msg.sender, _to, signer, _val, claimVal);
+        // Emit events
+        emit Claimed(msg.sender, _to, signer, val, claimVal);
 
+        // If contract is empty, perform self destruct
         if (balance == claimVal && _selfBalance() == 0) {
             selfdestruct(address(uint256(owner)));
         }
     }
 
+    // Migration methods
+
     event Migrated(address _addr, uint256 _balance);
     mapping(address => uint256) public migrated;
 
     function migrate(address _addr, uint256 _balance, uint256 _require) external {
-        require(isSigner[msg.sender]);
-        require(migrated[_addr] == _require);
-        migrated[_addr] = migrated[_addr] + _balance;
+        // Check if migrator is a signer
+        require(isSigner[msg.sender], "only signer can migrate");
+
+        // Check if expected migrated matches current migrated
+        require(migrated[_addr] == _require, "_require prev migrate failed");
+
+        // Save migrated amount
+        migrated[_addr] = migrated[_addr].add(_balance);
+
+        // Transfer tokens and emit event
         shuffleToken.transfer(_addr, _balance);
         emit Migrated(_addr, _balance);
     }

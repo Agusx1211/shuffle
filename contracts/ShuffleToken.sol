@@ -30,7 +30,6 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
     uint256 public totalSupply;
 
     bytes32 private constant BALANCE_KEY = keccak256("balance");
-    bytes32 private constant NONCE_KEY = keccak256("nonce");
 
     // game
     uint256 public constant FEE = 100;
@@ -40,7 +39,7 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
     AddressMinHeap.Heap private heap;
 
     // metadata
-    string public name = "shuffle.monster token V2";
+    string public name = "Shuffle.Monster V3";
     string public constant symbol = "SHUF";
     uint8 public constant decimals = 18;
 
@@ -56,8 +55,12 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
         address _to,
         uint256 _amount
     ) external {
-        require(!inited);
+        // Only init once
+        assert(!inited);
         inited = true;
+
+        // Init contract variables and mint
+        // entire token balance
         heap.initialize();
         extraGas = 15;
         emit SetExtraGas(0, extraGas);
@@ -127,28 +130,49 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
     }
 
     function _transferFrom(address _operator, address _from, address _to, uint256 _value, bool _skipWhitelist) internal {
+        // If transfer amount is zero
+        // emit event and stop execution
         if (_value == 0) {
             emit Transfer(_from, _to, 0);
             return;
         }
 
+        // Load sender balance
         uint256 balanceFrom = _balanceOf(_from);
         require(balanceFrom >= _value, "balance not enough");
 
+        // Check if operator is sender
         if (_from != _operator) {
+            // If not, validate allowance
             uint256 allowanceFrom = _allowance(_from, _operator);
+            // If allowance is not 2 ** 256 - 1, consume allowance
             if (allowanceFrom != uint(-1)) {
+                // Check allowance and save new one
                 require(allowanceFrom >= _value, "allowance not enough");
                 _setAllowance(_from, _operator, allowanceFrom.sub(_value));
             }
         }
 
+        // Calculate receiver balance
+        // initial receive is full value
         uint256 receive = _value;
+        uint256 burn = 0;
+        uint256 shuf = 0;
+
+        // Change sender balance
         _setBalance(_from, balanceFrom.sub(_value));
 
+        // If the transaction is not whitelisted
+        // or if sender requested to pay the fee
+        // calculate fees
         if (_skipWhitelist || !_isWhitelisted(_from, _to)) {
-            uint256 burn = _value.divRound(FEE);
-            uint256 shuf = _value == 1 ? 0 : burn;
+            // Fee is the same for BURN and SHUF
+            // If we are sending value one
+            // give priority to BURN
+            burn = _value.divRound(FEE);
+            shuf = _value == 1 ? 0 : burn;
+
+            // Subtract fees from receiver amount
             receive = receive.sub(burn.add(shuf));
 
             // Burn tokens
@@ -164,29 +188,42 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
             emit Transfer(_from, winner, shuf);
         }
 
-        // Transfer tokens
+        // Sanity checks
+        // no tokens where created
+        assert(burn.add(shuf).add(receive) == _value);
+
+        // Add tokens to receiver
         _setBalance(_to, _balanceOf(_to).add(receive));
         emit Transfer(_from, _to, receive);
     }
 
     function _computeHeap(address _addr, uint256 _new) internal {
         uint256 size = heap.size();
+
+        // If the heap is empty
+        // join the _addr
         if (size == 0) {
             emit JoinHeap(_addr, _new, 0);
             heap.insert(_addr, _new);
             return;
         }
 
+        // Load top value of the heap
         (, uint256 lastBal) = heap.top();
 
+        // If our target address already is in the heap
         if (heap.has(_addr)) {
+            // Update the target address value
             heap.update(_addr, _new);
+            // If the new value is 0
+            // always pop the heap
+            // we updated the heap, so our address should be on top
             if (_new == 0) {
                 heap.popTop();
                 emit LeaveHeap(_addr, 0, size);
             }
         } else {
-            // IF heap is full or new bal is better than pop heap
+            // IF heap is full or new balance is higher than pop heap
             if (_new != 0 && (size < TOP_SIZE || lastBal < _new)) {
                 // If heap is full pop heap
                 if (size >= TOP_SIZE) {
