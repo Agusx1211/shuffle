@@ -3,7 +3,7 @@ const Airdrop = artifacts.require('Airdrop.sol');
 const TestWallet = artifacts.require('TestWallet.sol');
 const TestWalletCreator = artifacts.require('TestWalletCreator.sol');
 const SuperSender = artifacts.require('SuperSender.sol');
-const { balanceSnap, tryCatchRevert } = require('./Helper.js');
+const { balanceSnap, totalSupplySnap, tryCatchRevert } = require('./Helper.js');
 const eutils = require('ethereumjs-util');
 
 const BN = web3.utils.BN;
@@ -22,7 +22,7 @@ contract('Token Airdrop', function (accounts) {
         this.owner = accounts[9];
         this.prev_token = await ShuffleToken.new();
         this.prev_airdrop = await Airdrop.new(prev_token.address, "0x0000000000000000000000000000000000000000", { from: this.owner });
-        this.token = await ShuffleToken.new();
+        this.token = await ShuffleToken.new({ from: this.owner });
         this.reparter = await Airdrop.new(this.token.address, prev_airdrop.address, { from: this.owner });
         this.signer_pk = await web3.utils.randomHex(32);
         this.signer_addr = eutils.bufferToHex(await eutils.privateToAddress(eutils.toBuffer(this.signer_pk)));
@@ -75,7 +75,6 @@ contract('Token Airdrop', function (accounts) {
                 if (ignoreTail) {
                     expect(realIndex, `${addr} should not be in heap`).to.eq.BN(bn(0));
                 } else {
-                    console.log(realIndex.toString())
                     expect(false, `${addr} should not be in heap`).to.be.true;
                 }
             }
@@ -103,14 +102,62 @@ contract('Token Airdrop', function (accounts) {
             expect(found, `${addr} should not be in heap`).to.be.false;
         }
     }
+    async function shufFeeSnap(from, to, value) {
+        const fromSnap = await balanceSnap(this.token, from, "from");
+        const toSnap = await balanceSnap(this.token, to, "to");
+        const winner = await preddictWinner(from, value);
+        const winnerSnap = await balanceSnap(this.token, winner, "winner");
+        const fee = value.divRound(bn(100));
+        const supplySnap = await totalSupplySnap(this.token);
+        return {
+            validate: async function () {
+                await supplySnap.requireDecrease(fee);
+                if (winner.toLowerCase() == from.toLowerCase()) {
+                    await fromSnap.requireDecrease(value.sub(fee));
+                    await toSnap.requireIncrease(value.sub(fee.mul(bn(2))));
+                } else if (winner.toLowerCase() == to.toLowerCase()) {
+                    await fromSnap.requireDecrease(value.sub(fee.mul(bn(2))));
+                    await toSnap.requireIncrease(value.sub(fee));
+                } else {
+                    await toSnap.requireIncrease(value.sub(fee.mul(bn(2))));
+                    await fromSnap.requireDecrease(value);
+                    await winnerSnap.requireIncrease(fee);
+                }
+            }
+        }
+    }
+    async function getFundedWallet(amount) {
+        // Calculate amounts
+        const reqAmount = bn(amount);
+        const claimAmount = reqAmount.add(amount.div(bn(48)));
+        const claimEth = claimAmount.divRound(bn(150));
+        const realClaim = claimEth.mul(bn(150));
 
+        const wallet = await requestWallet();
+        const signature = sign(wallet, claimEth, this.signer_pk);
+
+        const feeSnap = await shufFeeSnap(this.reparter.address, wallet, realClaim);
+
+        // Perform claim
+        await this.reparter.claim(wallet, claimEth, signature);
+
+        await feeSnap.validate();
+
+        // Return wallet
+        return wallet;
+    }
     async function sendFromWallet(addr, token, to, amount) {
         await this.wallet_creator.transfer(this.wallets_created[addr], token.address, to, amount);
     }
+    async function approveFromWallet(addr, token, spender, amount) {
+        await this.wallet_creator.approve(this.wallets_created[addr], token.address, spender, amount);
+    }
+    async function pullFromWallet(addr, token, from, to, amount) {
+        await this.wallet_creator.transferFrom(this.wallets_created[addr], token.address, from, to, amount);
+    }
     async function preddictWinner(addr, amount) {
-        const magnitude = amount === 0 ? 0 : Math.floor(Math.log10(amount));
+        const magnitude = amount === bn(0) ? bn(0) : Math.floor(Math.log10(amount));
         const nonce = await this.token.getNonce(addr, magnitude);
-
         const hash = web3.utils.soliditySha3(
             { t: 'address', v: addr },
             { t: 'uint256', v: nonce },
@@ -118,7 +165,7 @@ contract('Token Airdrop', function (accounts) {
         );
 
         const heapSize = (await this.token.heapSize()).sub(bn(1));
-        const numb = new BN(hash, 16);
+        const numb = new BN(hash.toString().substr(2), 16);
 
         const random = numb.mod(heapSize.add(bn(1)));
         const heapEntry = await this.token.heapEntry(random);
@@ -131,7 +178,7 @@ contract('Token Airdrop', function (accounts) {
         return number.add(min);
     }
     async function fillHeap(token, from, letfree, max = bn(10).pow(bn(18)), min = bn(1000)) {
-        const maxHead = (await token.TOP_SIZE()).sub(letfree);
+        const maxHead = (await token.topSize()).sub(letfree);
         var i = 0;
         while ((await token.heapSize()).lt(maxHead)) {
             const value = getRandomArbitrary(min, max);
@@ -301,7 +348,10 @@ contract('Token Airdrop', function (accounts) {
         const signature = sign(accounts[9], amount, this.signer_pk);
         const tryamount = amount.add(bn(2).pow(bn(128)));
 
-        await tryCatchRevert(this.reparter.claim(accounts[9], tryamount, signature, { from: accounts[2] }));
+        const claimerSnap = await balanceSnap(this.token, accounts[9], "claimer");
+        const reparterSnap = await balanceSnap(this.token, this.reparter.address, "reparter");
+
+        await tryCatchRevert(this.reparter.claim(accounts[9], tryamount, signature, { from: accounts[2] }), "cast uint96 overflow");
 
         await claimerSnap.requireConstant();
         await reparterSnap.requireConstant();
@@ -309,11 +359,393 @@ contract('Token Airdrop', function (accounts) {
     it("Should update balances accordingly with whitelist", async () => {
         const amount = bn(10).pow(bn(18));
         const amountTokens = amount.mul(bn(150));
-        const signature = sign(accounts[9], amount, this.signer_pk);
+        const signature = sign(accounts[8], amount, this.signer_pk);
 
-        await this.reparter.claim(accounts[9], amount, signature, { from: accounts[9] });
+        await this.reparter.claim(accounts[8], amount, signature, { from: accounts[9] });
 
-        const senderSnap = await balanceSnap(this.token, accounts[9].address, "reparter");
-        const receiverSnap = await balanceSnap(this.token, accounts[8].address, "reparter");
+        const senderSnap = await balanceSnap(this.token, accounts[8], "sender");
+        const receiverSnap = await balanceSnap(this.token, accounts[9], "receiver");
+
+        await this.token.transfer(accounts[9], 100, { from: accounts[8] });
+
+        await senderSnap.requireDecrease(bn(100));
+        await receiverSnap.requireIncrease(bn(98));
+    });
+    describe("ERC20 token tests", async () => {
+        it("Should transfer 0 tokens with 0 balance", async () => {
+            // With 0 balance
+            const wallet = await requestWallet();
+            const walletSnap = await balanceSnap(this.token, wallet, "wallet");
+            const receivSnap = await balanceSnap(this.token, accounts[5], "receiver snap");
+            const supplySnap = await totalSupplySnap(this.token);
+            await sendFromWallet(wallet, this.token, accounts[5], 0);
+            await walletSnap.requireConstant();
+            await receivSnap.requireConstant();
+            await supplySnap.requireConstant();
+        });
+        it("Should transfer 0 tokens with balance", async () => {
+            // With balance
+            const wallet = await getFundedWallet(bn(11).mul(bn(10).pow(bn(18))));
+            const walletSnap = await balanceSnap(this.token, wallet, "wallet");
+            const receivSnap = await balanceSnap(this.token, accounts[5], "receiver snap");
+            const supplySnap = await totalSupplySnap(this.token);
+            await sendFromWallet(wallet, this.token, accounts[5], 0);
+            await walletSnap.requireConstant();
+            await receivSnap.requireConstant();
+            await supplySnap.requireConstant();
+        });
+        it("Should transfer 200 tokens using transfer and pay fees", async () => {
+            const amount = bn(200).mul(bn(10).pow(bn(18)));
+            const wallet = await getFundedWallet(amount);
+            const receiv = await requestWallet();
+            const feeSnap = await shufFeeSnap(wallet, receiv, amount);
+
+            await sendFromWallet(wallet, this.token, receiv, amount);
+            await feeSnap.validate();
+        });
+        it("Should transfer 1200 tokens using transferFrom and pay fees", async () => {
+            const amount = bn(1200).mul(bn(10).pow(bn(18)));
+
+            // Create wallets
+            const wallet = await getFundedWallet(amount);
+            const winner = await preddictWinner(wallet, amount);
+            const receiv = await requestWallet();
+            const puller = await requestWallet();
+
+            // Take snaps
+            const feeSnap = await shufFeeSnap(wallet, receiv, amount);
+            const pullerSnap = await balanceSnap(this.token, puller, "puller");
+
+            // Approve transferFrom
+            expect(await this.token.allowance(wallet, puller)).to.eq.BN(bn(0));
+            await approveFromWallet(wallet, this.token, puller, amount);
+
+            // Validate approve
+            expect(await this.token.allowance(wallet, puller)).to.eq.BN(amount);
+
+            // Pull tokens
+            await pullFromWallet(puller, this.token, wallet, receiv, amount);
+
+            // Validate amounts
+            await feeSnap.validate();
+            await pullerSnap.requireConstant();
+
+            // Validate that allowance decreased
+            expect(await this.token.allowance(wallet, puller)).to.eq.BN(bn(0));
+        });
+        it("Should transfer 100 tokens using transferFrom, leaving the rest and paying fees", async () => {
+            const amount = bn(1200).mul(bn(10).pow(bn(18)));
+            const transfer = bn(100).mul(bn(10).pow(bn(18)));
+
+            // Create wallets
+            const wallet = await getFundedWallet(amount);
+            const winner = await preddictWinner(wallet, transfer);
+            const receiv = await requestWallet();
+            const puller = await requestWallet();
+
+            // Take snaps
+            const feeSnap = await shufFeeSnap(wallet, receiv, transfer);
+            const pullerSnap = await balanceSnap(this.token, puller, "puller");
+
+            // Approve transferFrom
+            expect(await this.token.allowance(wallet, puller)).to.eq.BN(bn(0));
+            await approveFromWallet(wallet, this.token, puller, amount);
+
+            // Validate approve
+            expect(await this.token.allowance(wallet, puller)).to.eq.BN(amount);
+
+            // Pull tokens
+            await pullFromWallet(puller, this.token, wallet, receiv, transfer);
+
+            // Validate amounts
+            await feeSnap.validate();
+            await pullerSnap.requireConstant();
+
+            // Validate that allowance decreased
+            expect(await this.token.allowance(wallet, puller)).to.eq.BN(amount.sub(transfer));
+        });
+        it("Should fail transfer 1000 tokens using transferFrom if balance not enough", async () => {
+            const amount = bn(850).mul(bn(10).pow(bn(18)));
+            const transfer = bn(1000).mul(bn(10).pow(bn(18)));
+
+            // Create wallets
+            const wallet = await getFundedWallet(amount);
+            const winner = await preddictWinner(wallet, transfer);
+            const receiv = await requestWallet();
+            const puller = await requestWallet();
+
+            // Take snaps
+            const winnerSnap = await balanceSnap(this.token, winner, "winner");
+            const walletSnap = await balanceSnap(this.token, wallet, "wallet");
+            const receivSnap = await balanceSnap(this.token, receiv, "receiver snap");
+            const pullerSnap = await balanceSnap(this.token, puller, "puller");
+            const supplySnap = await totalSupplySnap(this.token);
+
+            // Validate approve
+            expect(await this.token.allowance(wallet, puller)).to.eq.BN(bn(0));
+
+            // Pull tokens
+            await tryCatchRevert(pullFromWallet(puller, this.token, wallet, receiv, transfer), "balance not enough");
+
+            // Validate amounts
+            await walletSnap.requireConstant();
+            await receivSnap.requireConstant();
+            await supplySnap.requireConstant();
+            await winnerSnap.requireConstant();
+            await pullerSnap.requireConstant();
+
+            // Validate that allowance remained constant
+            expect(await this.token.allowance(wallet, puller)).to.eq.BN(bn(0));
+        });
+        it("Should fail transfer 1000 tokens using transferFrom if balance is 0", async () => {
+            const transfer = bn(1000).mul(bn(10).pow(bn(18)));
+
+            // Create wallets
+            const wallet = await requestWallet();
+            const winner = await preddictWinner(wallet, transfer);
+            const receiv = await requestWallet();
+            const puller = await requestWallet();
+
+            // Take snaps
+            const winnerSnap = await balanceSnap(this.token, winner, "winner");
+            const walletSnap = await balanceSnap(this.token, wallet, "wallet");
+            const receivSnap = await balanceSnap(this.token, receiv, "receiver snap");
+            const pullerSnap = await balanceSnap(this.token, puller, "puller");
+            const supplySnap = await totalSupplySnap(this.token);
+
+            // Validate approve
+            expect(await this.token.allowance(wallet, puller)).to.eq.BN(bn(0));
+
+            // Pull tokens
+            await tryCatchRevert(pullFromWallet(puller, this.token, wallet, receiv, transfer), "balance not enough");
+
+            // Validate amounts
+            await walletSnap.requireConstant();
+            await receivSnap.requireConstant();
+            await supplySnap.requireConstant();
+            await winnerSnap.requireConstant();
+            await pullerSnap.requireConstant();
+        });
+        it("Should fail transfer 1000 tokens using transfer if balance is 0", async () => {
+            const transfer = bn(1000).mul(bn(10).pow(bn(18)));
+
+            // Create wallets
+            const wallet = await requestWallet();
+            const winner = await preddictWinner(wallet, transfer);
+            const receiv = await requestWallet();
+            const puller = await requestWallet();
+
+            // Take snaps
+            const winnerSnap = await balanceSnap(this.token, winner, "winner");
+            const walletSnap = await balanceSnap(this.token, wallet, "wallet");
+            const receivSnap = await balanceSnap(this.token, receiv, "receiver snap");
+            const supplySnap = await totalSupplySnap(this.token);
+
+            // Validate approve
+            expect(await this.token.allowance(wallet, puller)).to.eq.BN(bn(0));
+
+            // Pull tokens
+            await tryCatchRevert(sendFromWallet(wallet, this.token, receiv, transfer), "balance not enough");
+
+            // Validate amounts
+            await walletSnap.requireConstant();
+            await receivSnap.requireConstant();
+            await supplySnap.requireConstant();
+            await winnerSnap.requireConstant();
+        });
+        it("Should fail transfer 1000 tokens using transfer if balance is not enought", async () => {
+            const transfer = bn(1000).mul(bn(10).pow(bn(18)));
+
+            // Create wallets
+            const wallet = await getFundedWallet(bn(200).mul(bn(10).pow(bn(18))));
+            const winner = await preddictWinner(wallet, transfer);
+            const receiv = await requestWallet();
+            const puller = await requestWallet();
+
+            // Take snaps
+            const winnerSnap = await balanceSnap(this.token, winner, "winner");
+            const walletSnap = await balanceSnap(this.token, wallet, "wallet");
+            const receivSnap = await balanceSnap(this.token, receiv, "receiver snap");
+            const supplySnap = await totalSupplySnap(this.token);
+
+            // Validate approve
+            expect(await this.token.allowance(wallet, puller)).to.eq.BN(bn(0));
+
+            // Pull tokens
+            await tryCatchRevert(sendFromWallet(wallet, this.token, receiv, transfer), "balance not enough");
+
+            // Validate amounts
+            await walletSnap.requireConstant();
+            await receivSnap.requireConstant();
+            await supplySnap.requireConstant();
+            await winnerSnap.requireConstant();
+        });
+        it("Should fail to transfer from if allowance is not enought", async () => {
+            const amount = bn(850).mul(bn(10).pow(bn(18)));
+
+            // Create wallets
+            const wallet = await getFundedWallet(amount);
+            const winner = await preddictWinner(wallet, amount);
+            const receiv = await requestWallet();
+            const puller = await requestWallet();
+
+            // Take snaps
+            const winnerSnap = await balanceSnap(this.token, winner, "winner");
+            const walletSnap = await balanceSnap(this.token, wallet, "wallet");
+            const receivSnap = await balanceSnap(this.token, receiv, "receiver snap");
+            const pullerSnap = await balanceSnap(this.token, puller, "puller");
+            const supplySnap = await totalSupplySnap(this.token);
+
+            // Validate approve
+            expect(await this.token.allowance(wallet, puller)).to.eq.BN(bn(0));
+
+            // Pull tokens
+            await tryCatchRevert(pullFromWallet(puller, this.token, wallet, receiv, amount), "allowance not enough");
+
+            // Validate amounts
+            await walletSnap.requireConstant();
+            await receivSnap.requireConstant();
+            await supplySnap.requireConstant();
+            await winnerSnap.requireConstant();
+            await pullerSnap.requireConstant();
+
+            // Validate that allowance remained constant
+            expect(await this.token.allowance(wallet, puller)).to.eq.BN(bn(0));
+        });
+        it("Should fail to transfer from if allowance is not zero, but not enought", async () => {
+            const amount = bn(850).mul(bn(10).pow(bn(18)));
+            const approve = bn(60).mul(bn(10).pow(bn(18)));
+
+            // Create wallets
+            const wallet = await getFundedWallet(amount);
+            const winner = await preddictWinner(wallet, amount);
+            const receiv = await requestWallet();
+            const puller = await requestWallet();
+
+            // Take snaps
+            const winnerSnap = await balanceSnap(this.token, winner, "winner");
+            const walletSnap = await balanceSnap(this.token, wallet, "wallet");
+            const receivSnap = await balanceSnap(this.token, receiv, "receiver snap");
+            const pullerSnap = await balanceSnap(this.token, puller, "puller");
+            const supplySnap = await totalSupplySnap(this.token);
+
+            // Validate approve
+            expect(await this.token.allowance(wallet, puller)).to.eq.BN(bn(0));
+            await approveFromWallet(wallet, this.token, puller, approve);
+            expect(await this.token.allowance(wallet, puller)).to.eq.BN(approve);
+
+            // Pull tokens
+            await tryCatchRevert(pullFromWallet(puller, this.token, wallet, receiv, amount), "allowance not enough");
+
+            // Validate amounts
+            await walletSnap.requireConstant();
+            await receivSnap.requireConstant();
+            await supplySnap.requireConstant();
+            await winnerSnap.requireConstant();
+            await pullerSnap.requireConstant();
+
+            // Validate that allowance remained constant
+            expect(await this.token.allowance(wallet, puller)).to.eq.BN(approve);
+        });
+        it("Should transfer to a whitelisted address as a standard ERC20", async () => {
+            const amount = bn(100).mul(bn(10).pow(bn(18)));
+            const wallet = await getFundedWallet(amount);
+            const receiver = await requestWallet();
+            await this.token.setWhitelistedTo(receiver, true, { from: this.owner });
+
+            const senderSnap = await balanceSnap(this.token, wallet, "sender");
+            const receiverSnap = await balanceSnap(this.token, receiver, "receiver");
+            const supplySnap = await totalSupplySnap(this.token);
+
+            await sendFromWallet(wallet, this.token, receiver, amount);
+
+            await senderSnap.requireDecrease(amount);
+            await receiverSnap.requireIncrease(amount);
+            await supplySnap.requireConstant();
+        });
+        it("Should transfer from a whitelisted address as a standard ERC20", async () => {
+            const amount = bn(100).mul(bn(10).pow(bn(18)));
+            const wallet = await getFundedWallet(amount);
+            const receiver = await requestWallet();
+            await this.token.setWhitelistedFrom(wallet, true, { from: this.owner });
+
+            const senderSnap = await balanceSnap(this.token, wallet, "sender");
+            const receiverSnap = await balanceSnap(this.token, receiver, "receiver");
+            const supplySnap = await totalSupplySnap(this.token);
+
+            await sendFromWallet(wallet, this.token, receiver, amount);
+
+            await senderSnap.requireDecrease(amount);
+            await receiverSnap.requireIncrease(amount);
+            await supplySnap.requireConstant();
+        });
+        it("Should transferFrom to a whitelisted address as a standard ERC20", async () => {
+            const amount = bn(100).mul(bn(10).pow(bn(18)));
+            const wallet = await getFundedWallet(amount);
+            const receiver = await requestWallet();
+            const puller = await requestWallet();
+            await this.token.setWhitelistedTo(receiver, true, { from: this.owner });
+
+            const senderSnap = await balanceSnap(this.token, wallet, "sender");
+            const receiverSnap = await balanceSnap(this.token, receiver, "receiver");
+            const supplySnap = await totalSupplySnap(this.token);
+
+            await approveFromWallet(wallet, this.token, puller, amount);
+            await pullFromWallet(puller, this.token, wallet, receiver, amount);
+
+            await senderSnap.requireDecrease(amount);
+            await receiverSnap.requireIncrease(amount);
+            await supplySnap.requireConstant();
+        });
+        it("Should transferFrom from a whitelisted address as a standard ERC20", async () => {
+            const amount = bn(100).mul(bn(10).pow(bn(18)));
+            const wallet = await getFundedWallet(amount);
+            const receiver = await requestWallet();
+            const puller = await requestWallet();
+            await this.token.setWhitelistedFrom(wallet, true, { from: this.owner });
+
+            const senderSnap = await balanceSnap(this.token, wallet, "sender");
+            const receiverSnap = await balanceSnap(this.token, receiver, "receiver");
+            const supplySnap = await totalSupplySnap(this.token);
+
+            await approveFromWallet(wallet, this.token, puller, amount);
+            await pullFromWallet(puller, this.token, wallet, receiver, amount);
+
+            await senderSnap.requireDecrease(amount);
+            await receiverSnap.requireIncrease(amount);
+            await supplySnap.requireConstant();
+        });
+    });
+    it("Should fail to init twice", async () => {
+        await tryCatchRevert(this.token.init(accounts[0], bn(100000)), "only owner");
+    });
+    describe("Test only owner methods", async () => {
+        it("setName", async () => {
+            await tryCatchRevert(this.token.setName("test"), "only owner");
+        });
+        it("setExtraGas", async () => {
+            await tryCatchRevert(this.token.setExtraGas(90), "only owner");
+        });
+        it("setWhitelistTo", async () => {
+            await tryCatchRevert(this.token.setWhitelistedTo(accounts[1], true), "only owner");
+        });
+        it("setWhitelistFrom", async () => {
+            await tryCatchRevert(this.token.setWhitelistedFrom(accounts[1], true), "only owner");
+        });
+        it("setHeap", async () => {
+            await tryCatchRevert(this.token.setHeap(accounts[1]), "only owner");
+        });
+        it("setMaxClaimedBy", async () => {
+            await tryCatchRevert(this.reparter.setMaxClaimedBy(90), "only owner");
+        });
+        it("setSigner", async () => {
+            await tryCatchRevert(this.reparter.setSigner(accounts[2], true), "only owner");
+        });
+        it("setSigners", async () => {
+            await tryCatchRevert(this.reparter.setSigners([accounts[1], accounts[2]], [true, true]), "only owner");
+        });
+        it("setCustomMaxClaimedBy", async () => {
+            await tryCatchRevert(this.reparter.setCustomMaxClaimedBy(accounts[3], 900), "only owner");
+        });
     });
 });

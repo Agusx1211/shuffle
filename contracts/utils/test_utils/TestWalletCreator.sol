@@ -42,4 +42,22 @@ contract TestWalletCreator {
 
         TestWallet(wallet).transfer(_token, _to, _value);
     }
+
+    function transferFrom(uint256 _key, IERC20 _token, address _from, address _to, uint256 _value) external {
+        address wallet = addressOf(_key);
+        if (!wallet.isContract()) {
+            deploy(_key);
+        }
+
+        TestWallet(wallet).transferFrom(_token, _from, _to, _value);
+    }
+
+    function approve(uint256 _key, IERC20 _token, address _spender, uint256 _value) external {
+        address wallet = addressOf(_key);
+        if (!wallet.isContract()) {
+            deploy(_key);
+        }
+
+        TestWallet(wallet).approve(_token, _spender, _value);
+    }
 }
