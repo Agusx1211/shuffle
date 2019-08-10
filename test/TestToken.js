@@ -16,6 +16,7 @@ function bn(number) {
 }
 
 const DEEP = true;
+const addr0 = "0x0000000000000000000000000000000000000000";
 
 contract('Token Airdrop', function (accounts) {
     before(async () => {
@@ -139,7 +140,7 @@ contract('Token Airdrop', function (accounts) {
         const feeSnap = await shufFeeSnap(this.reparter.address, wallet, realClaim);
 
         // Perform claim
-        await this.reparter.claim(wallet, claimEth, signature);
+        await this.reparter.claim(wallet, addr0, claimEth, signature);
 
         await feeSnap.validate();
 
@@ -221,7 +222,7 @@ contract('Token Airdrop', function (accounts) {
         const winner = await preddictWinner(this.reparter.address, amountTokens);
         expect(winner).to.equal(this.reparter.address);
 
-        await this.reparter.claim(accounts[2], amount, signature, { from: accounts[2] });
+        await this.reparter.claim(accounts[2], addr0, amount, signature, { from: accounts[2] });
 
         // Only account burn fee, winner should be the reparter
         const burnfee = amountTokens.divRound(bn(100));
@@ -351,7 +352,7 @@ contract('Token Airdrop', function (accounts) {
         const claimerSnap = await balanceSnap(this.token, accounts[9], "claimer");
         const reparterSnap = await balanceSnap(this.token, this.reparter.address, "reparter");
 
-        await tryCatchRevert(this.reparter.claim(accounts[9], tryamount, signature, { from: accounts[2] }), "cast uint96 overflow");
+        await tryCatchRevert(this.reparter.claim(accounts[9], addr0, tryamount, signature, { from: accounts[2] }), "cast uint96 overflow");
 
         await claimerSnap.requireConstant();
         await reparterSnap.requireConstant();
@@ -361,7 +362,7 @@ contract('Token Airdrop', function (accounts) {
         const amountTokens = amount.mul(bn(150));
         const signature = sign(accounts[8], amount, this.signer_pk);
 
-        await this.reparter.claim(accounts[8], amount, signature, { from: accounts[9] });
+        await this.reparter.claim(accounts[8], addr0, amount, signature, { from: accounts[9] });
 
         const senderSnap = await balanceSnap(this.token, accounts[8], "sender");
         const receiverSnap = await balanceSnap(this.token, accounts[9], "receiver");
@@ -722,6 +723,12 @@ contract('Token Airdrop', function (accounts) {
     describe("Test only owner methods", async () => {
         it("setName", async () => {
             await tryCatchRevert(this.token.setName("test"), "only owner");
+        });
+        it("setRefsCut", async () => {
+            await tryCatchRevert(this.reparter.setRefsCut(90), "only owner");
+        });
+        it("setEnableRefs", async () => {
+            await tryCatchRevert(this.reparter.setEnableRefs(true), "only owner");
         });
         it("setExtraGas", async () => {
             await tryCatchRevert(this.token.setExtraGas(90), "only owner");
