@@ -1,5 +1,6 @@
 pragma solidity ^0.5.10;
 
+import "./commons/ReentrancyGuard.sol";
 import "./commons/Ownable.sol";
 import "./ShuffleToken.sol";
 import "./utils/SigUtils.sol";
@@ -8,7 +9,7 @@ import "./utils/SafeCast.sol";
 import "./utils/SafeMath.sol";
 
 
-contract Airdrop is Ownable {
+contract Airdrop is Ownable, ReentrancyGuard {
     using IsContract for address payable;
     using SafeCast for uint256;
     using SafeMath for uint256;
@@ -16,42 +17,47 @@ contract Airdrop is Ownable {
     ShuffleToken public shuffleToken;
 
     // Managment
-    uint64 public maxClaimedBy = 100;
-    bool public enableRefs;
+    uint64 public maxClaimedBy = 0;
     uint256 public refsCut;
     mapping(address => uint256) public customMaxClaimedBy;
+    bool public paused;
 
     event SetMaxClaimedBy(uint256 _max);
     event SetCustomMaxClaimedBy(address _address, uint256 _max);
     event SetSigner(address _signer, bool _active);
-    event SetEnableRefs(bool _prev, bool _new);
+    event SetMigrator(address _migrator, bool _active);
+    event SetFuse(address _fuse, bool _active);
+    event SetPaused(bool _paused);
     event SetRefsCut(uint256 _prev, uint256 _new);
     event Claimed(address _by, address _to, address _signer, uint256 _value, uint256 _claimed);
     event RefClaim(address _ref, uint256 _val);
     event ClaimedOwner(address _owner, uint256 _tokens);
 
-    uint256 public constant MINT_AMOUNT = 1010101010101010101010101;
-    uint256 public constant CREATOR_AMOUNT = (MINT_AMOUNT * 6) / 100;
+    uint256 public constant MINT_AMOUNT = 1000000 * 10 ** 18;
     uint256 public constant SHUFLE_BY_ETH = 150;
     uint256 public constant MAX_CLAIM_ETH = 10 ether;
 
     mapping(address => bool) public isSigner;
+    mapping(address => bool) public isMigrator;
+    mapping(address => bool) public isFuse;
 
     mapping(address => uint256) public claimed;
     mapping(address => uint256) public numberClaimedBy;
-    bool public creatorClaimed;
-    Airdrop public prevAirdrop;
 
-    constructor(ShuffleToken _token, Airdrop _prev) public {
+    constructor(ShuffleToken _token) public {
         shuffleToken = _token;
         shuffleToken.init(address(this), MINT_AMOUNT);
         emit SetMaxClaimedBy(maxClaimedBy);
-        prevAirdrop = _prev;
     }
 
     // ///
     // Managment
     // ///
+
+    modifier notPaused() {
+        require(!paused, "contract is paused");
+        _;
+    }
 
     function setMaxClaimedBy(uint64 _max) external onlyOwner {
         maxClaimedBy = _max;
@@ -61,6 +67,16 @@ contract Airdrop is Ownable {
     function setSigner(address _signer, bool _active) external onlyOwner {
         isSigner[_signer] = _active;
         emit SetSigner(_signer, _active);
+    }
+
+    function setMigrator(address _migrator, bool _active) external onlyOwner {
+        isMigrator[_migrator] = _active;
+        emit SetMigrator(_migrator, _active);
+    }
+
+    function setFuse(address _fuse, bool _active) external onlyOwner {
+        isFuse[_fuse] = _active;
+        emit SetFuse(_fuse, _active);
     }
 
     function setSigners(address[] calldata _signers, bool _active) external onlyOwner {
@@ -76,14 +92,27 @@ contract Airdrop is Ownable {
         emit SetCustomMaxClaimedBy(_address, _max);
     }
 
-    function setEnableRefs(bool _enable) external onlyOwner {
-        emit SetEnableRefs(enableRefs, _enable);
-        enableRefs = _enable;
-    }
-
     function setRefsCut(uint256 _val) external onlyOwner {
         emit SetRefsCut(refsCut, _val);
         refsCut = _val;
+    }
+
+    function pause() external {
+        require(
+            isFuse[msg.sender] ||
+            msg.sender == owner ||
+            isMigrator[msg.sender] ||
+            isSigner[msg.sender],
+            "not authorized"
+        );
+
+        paused = true;
+        emit SetPaused(true);
+    }
+
+    function start() external onlyOwner {
+        emit SetPaused(false);
+        paused = false;
     }
 
     // ///
@@ -104,7 +133,7 @@ contract Airdrop is Ownable {
         address _ref,
         uint256 _val,
         bytes calldata _sig
-    ) external {
+    ) external notPaused nonReentrant {
         // Load values
         uint96 val = _val.toUint96();
 
@@ -127,21 +156,25 @@ contract Airdrop is Ownable {
         assert(claimVal <= SHUFLE_BY_ETH.mult(val));
         assert(claimVal <= MAX_CLAIM_ETH.mult(SHUFLE_BY_ETH));
         assert(claimVal.div(SHUFLE_BY_ETH) <= MAX_CLAIM_ETH);
-        assert(uint96(claimVal.div(SHUFLE_BY_ETH)) == uint96(_val));
-
-        // External claim checks
-        if (msg.sender != _to) {
-            // Validate max external claims
-            uint256 _numberClaimedBy = numberClaimedBy[msg.sender];
-            require(_numberClaimedBy <= Math.max(maxClaimedBy, customMaxClaimedBy[msg.sender]), "max claim reached");
-            numberClaimedBy[msg.sender] = _numberClaimedBy.add(1);
-            // Check if _to address can receive ETH
-            require(checkFallback(_to), "_to address can't receive tokens");
-        }
+        assert(
+            claimVal.div(SHUFLE_BY_ETH) == _val ||
+            claimVal.div(SHUFLE_BY_ETH) == MAX_CLAIM_ETH ||
+            claimVal == balance
+        );
 
         // Claim, only once
         require(claimed[_to] == 0, "already claimed");
         claimed[_to] = claimVal;
+
+        // External claim checks
+        if (msg.sender != _to) {
+            // Validate max external claims
+            uint256 _numberClaimedBy = numberClaimedBy[msg.sender].add(1);
+            require(_numberClaimedBy <= Math.max(maxClaimedBy, customMaxClaimedBy[msg.sender]), "max claim reached");
+            numberClaimedBy[msg.sender] = _numberClaimedBy;
+            // Check if _to address can receive ETH
+            require(checkFallback(_to), "_to address can't receive tokens");
+        }
 
         // Transfer Shuffle token, paying fee
         shuffleToken.transferWithFee(_to, claimVal);
@@ -150,17 +183,21 @@ contract Airdrop is Ownable {
         emit Claimed(msg.sender, _to, signer, val, claimVal);
 
         // Ref links
-        if (enableRefs) {
+        if (refsCut != 0) {
             // Only valid for self-claims
-            if (msg.sender == _to) {
+            if (msg.sender == _to && _ref != address(0)) {
                 // Calc transfer extra
                 uint256 extra = claimVal.mult(refsCut).div(10000);
-                shuffleToken.transferWithFee(_ref, extra);
-                emit RefClaim(_ref, extra);
+                // Ignore ref fee if Airdrop balance is not enought
+                if (_selfBalance() >= extra) {
+                    shuffleToken.transferWithFee(_ref, extra);
+                    emit RefClaim(_ref, extra);
 
-                // Sanity checks
-                assert(extra <= MAX_CLAIM_ETH.mult(SHUFLE_BY_ETH));
-                assert(extra <= claimVal);
+                    // Sanity checks
+                    assert(extra <= MAX_CLAIM_ETH.mult(SHUFLE_BY_ETH));
+                    assert(extra <= claimVal);
+                    assert(extra == (claimVal * refsCut) / 10000);
+                }
             }
         }
 
@@ -175,9 +212,9 @@ contract Airdrop is Ownable {
     event Migrated(address _addr, uint256 _balance);
     mapping(address => uint256) public migrated;
 
-    function migrate(address _addr, uint256 _balance, uint256 _require) external {
-        // Check if migrator is a signer
-        require(isSigner[msg.sender], "only signer can migrate");
+    function migrate(address _addr, uint256 _balance, uint256 _require) external notPaused {
+        // Check if migrator is a migrator
+        require(isMigrator[msg.sender], "only migrator can migrate");
 
         // Check if expected migrated matches current migrated
         require(migrated[_addr] == _require, "_require prev migrate failed");
