@@ -2,7 +2,6 @@ const ShuffleToken = artifacts.require('ShuffleToken.sol');
 const Airdrop = artifacts.require('Airdrop.sol');
 const TestWallet = artifacts.require('TestWallet.sol');
 const TestWalletCreator = artifacts.require('TestWalletCreator.sol');
-const SuperSender = artifacts.require('SuperSender.sol');
 const { balanceSnap, totalSupplySnap, tryCatchRevert } = require('./Helper.js');
 const eutils = require('ethereumjs-util');
 
@@ -21,10 +20,8 @@ const addr0 = "0x0000000000000000000000000000000000000000";
 contract('Token Airdrop', function (accounts) {
     before(async () => {
         this.owner = accounts[9];
-        this.prev_token = await ShuffleToken.new();
-        this.prev_airdrop = await Airdrop.new(prev_token.address, "0x0000000000000000000000000000000000000000", { from: this.owner });
         this.token = await ShuffleToken.new({ from: this.owner });
-        this.reparter = await Airdrop.new(this.token.address, prev_airdrop.address, { from: this.owner });
+        this.reparter = await Airdrop.new(this.token.address, { from: this.owner });
         this.signer_pk = await web3.utils.randomHex(32);
         this.signer_addr = eutils.bufferToHex(await eutils.privateToAddress(eutils.toBuffer(this.signer_pk)));
         this.wallet_creator = await TestWalletCreator.new();
