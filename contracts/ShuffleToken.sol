@@ -53,6 +53,10 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
         assert(!inited);
         inited = true;
 
+        // Sanity checks
+        assert(totalSupply == 0);
+        assert(address(heap) == address(0));
+
         // Create Heap
         heap = new Heap();
         emit SetHeap(address(0), address(heap));
@@ -281,6 +285,11 @@ contract ShuffleToken is Ownable, GasPump, IERC20 {
 
     function transferFrom(address _from, address _to, uint256 _value) external requestGas(extraGas) returns (bool) {
         _transferFrom(msg.sender, _from, _to, _value, false);
+        return true;
+    }
+
+    function transferFromWithFee(address _from, address _to, uint256 _value) external requestGas(extraGas) returns (bool) {
+        _transferFrom(msg.sender, _from, _to, _value, true);
         return true;
     }
 }
