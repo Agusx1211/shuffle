@@ -22,6 +22,7 @@ contract('Token Airdrop', function (accounts) {
         this.owner = accounts[9];
         this.token = await ShuffleToken.new({ from: this.owner });
         this.reparter = await Airdrop.new(this.token.address, { from: this.owner });
+        await this.reparter.setMaxClaimedBy(100, { from: this.owner });
         this.signer_pk = await web3.utils.randomHex(32);
         this.signer_addr = eutils.bufferToHex(await eutils.privateToAddress(eutils.toBuffer(this.signer_pk)));
         this.wallet_creator = await TestWalletCreator.new();
