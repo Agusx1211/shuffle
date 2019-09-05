@@ -166,10 +166,10 @@ library AddressMinHeap {
         // Bubble down
         ind = _ind;
 
-        uint256 lenght = _heap.entries.length;
-        uint256 target = lenght - 1;
+        uint256 length = _heap.entries.length;
+        uint256 target = length - 1;
 
-        while (ind * 2 < lenght) {
+        while (ind * 2 < length) {
             // get the current index of the children
             uint256 j = ind * 2;
 
