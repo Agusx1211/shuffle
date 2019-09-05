@@ -16,7 +16,7 @@ contract Airdrop is Ownable, ReentrancyGuard {
 
     ShuffleToken public shuffleToken;
 
-    // Managment
+    // Management
     uint64 public maxClaimedBy = 0;
     uint256 public refsCut;
     mapping(address => uint256) public customMaxClaimedBy;
@@ -51,7 +51,7 @@ contract Airdrop is Ownable, ReentrancyGuard {
     }
 
     // ///
-    // Managment
+    // Management
     // ///
 
     modifier notPaused() {
